@@ -105,42 +105,47 @@ def iteNondet (b : Ident) (thenItems elseItems : Array DoItem) : MacroM (Array D
   pure #[pick, branch]
 
 /-- A `while` loop with invariant on the state tuple of the variables `vars` that the body
-assigns. `inv` and `guard` receive the state term (so the caller can substitute projections
-for the variables); `body` receives it as well and returns the body items, which may assign
-the `vars` (they are rebound with `let mut` from the state). Generic in the monad so the
-translator can run its own context inside the callbacks. Returns the items: the loop
-bound to `s`, then one assignment per variable. -/
+assigns. `inv` and `guard` receive the state term, so the caller can substitute projections
+for the variables; `body` receives it as well and returns the body items, which may read and
+assign the `vars`. Generic in the monad so the translator can run its own context inside the
+callbacks.
+
+The tuple `(x₁, …, xₖ)` is built once and used in four places: as the pattern that unpacks the
+state into mutable copies at the start of the body (`let mut (x₁, …, xₖ) := s`), as the new
+state the body returns (`pure (x₁, …, xₖ)`), as the initial state passed to the loop, and as
+the pattern that copies the final state back (`(x₁, …, xₖ) ← whileInv …`). Inside the body
+the names refer to the body's own copies; outside, to the enclosing variables. With one
+variable the pattern is the variable itself; with none the state is `()` and the loop is a
+plain statement. Returns the single item for the loop. -/
 def whileInv {m : Type → Type} [Monad m] [MonadLiftT MacroM m]
     (s : Ident) (vars : Array Ident) (tys : Array Term)
     (inv guard : Term → m Term) (body : Term → m (Array DoItem)) :
     m (Array DoItem) := do
-  let k := vars.size
   let stTy ← (tupleType tys : MacroM Term)
   let sTerm : Term ← (`($s) : MacroM Term)
   let invBody ← inv sTerm
   let guardBody ← guard sTerm
   let invFn ← (`(fun ($s : $stTy) => $invBody) : MacroM Term)
   let guardFn ← (`(fun ($s : $stTy) => $guardBody) : MacroM Term)
-  -- body: rebind each variable mutably from the state, run the body, return the tuple
-  let mut bodyItems : Array DoItem := #[]
-  for j in [:k] do
-    let pj ← (proj sTerm j k : MacroM Term)
-    let v := vars[j]!
-    let t := tys[j]!
-    bodyItems := bodyItems.push (← (do item (← `(doElem| let mut $v:ident : $t := $pj)) : MacroM DoItem))
-  bodyItems := bodyItems ++ (← body sTerm)
-  let tup ← (tuple (vars.map fun v => (v : Term)) : MacroM Term)
-  bodyItems := bodyItems.push (← (do item (← `(doElem| pure $tup)) : MacroM DoItem))
-  let bodyBlock ← (doBlock bodyItems : MacroM Term)
+  let stateTup ← (tuple (vars.map fun v => (v : Term)) : MacroM Term)
+  let unpack ← (do
+      match vars.size with
+      | 0 => pure #[]
+      | 1 => pure #[← item (← letMut vars[0]! tys[0]! sTerm)]
+      | _ => pure #[← item (← `(doElem| let mut $stateTup:term := $sTerm))]
+    : MacroM (Array DoItem))
+  let bodyItems := unpack ++ (← body sTerm)
+  let ret ← (do item (← `(doElem| pure $stateTup)) : MacroM DoItem)
+  let bodyBlock ← (doBlock (bodyItems.push ret) : MacroM Term)
   let bodyFn ← (`(fun ($s : $stTy) => $bodyBlock) : MacroM Term)
-  let init ← (tuple (vars.map fun v => (v : Term)) : MacroM Term)
-  let loop ← (do item (← `(doElem| let $s:ident ← Strata.Shallow.ND.whileInv $invFn $guardFn $bodyFn $init)) : MacroM DoItem)
-  let mut out : Array DoItem := #[loop]
-  for j in [:k] do
-    let pj ← (proj sTerm j k : MacroM Term)
-    let v := vars[j]!
-    out := out.push (← (do item (← `(doElem| $v:ident := $pj)) : MacroM DoItem))
-  pure out
+  let call ← (`(Strata.Shallow.ND.whileInv $invFn $guardFn $bodyFn $stateTup) : MacroM Term)
+  let loop ← (do
+      match vars.size with
+      | 0 => item (← `(doElem| $call:term))
+      | 1 => item (← `(doElem| $(vars[0]!):ident ← $call:term))
+      | _ => item (← `(doElem| $stateTup:term ← $call:term))
+    : MacroM DoItem)
+  pure #[loop]
 
 /-! ## Declarations -/
 
