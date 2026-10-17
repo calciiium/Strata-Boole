@@ -19,6 +19,8 @@ import StrataBooleTest.function_definitions
 import StrataBooleTest.nat_native
 import StrataBooleTest.nat_counterexample
 import StrataBooleTest.nat_counterexample_extended
+import StrataBooleTest.lemmas_and_axioms
+import StrataBooleTest.local_functions
 import StrataBooleTest.nat_detection
 import StrataBooleTest.global_readonly_call
 import StrataBooleTest.grammar_extensions
@@ -58,3 +60,4 @@ import StrataBooleTest.FeatureRequests.montgomery_loop_invariant
 import StrataBooleTest.FeatureRequests.scalar_reduce
 import StrataBooleTest.FeatureRequests.seq_empty_literal
 import StrataBooleTest.FeatureRequests.sha256_compact_indexed
+import StrataBooleTest.CoreTests.DefineFunRecTests
