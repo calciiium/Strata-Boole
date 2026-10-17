@@ -61,6 +61,9 @@ several that are now fully implemented; a few have moved to
   - `fun x : T => body` lowers to nested Core `.abs` nodes; `(f)(x)` lowers to `.app () f x`.
   - Remaining gap: first-class function values as procedure parameters / local variables still need abstract-type encoding for the SMT path.
   - Benchmark: [`lambda_closure.lean`](../StrataBooleTest/FeatureRequests/lambda_closure.lean).
+- **Local `function` declarations inside procedures**
+  - A local function is a local variable bound to a lambda, as in Core; it can capture variables in scope. Type parameters and preconditions on local functions are rejected, and `inline` on them is ignored.
+  - Benchmark: [`local_functions.lean`](../StrataBooleTest/local_functions.lean).
 - **SMT-LIB 2.7 cast operators** (`e as_int`, `e as_sint`, `e as_bv{n}`) (Gap #6)
   - `e as_int` → `Bv{n}.ToUInt` → SMT-LIB 2.7 `ubv_to_int` (unsigned); widths 1/8/16/32/64/128.
   - `e as_sint` → `Bv{n}.ToInt` → SMT-LIB 2.7 `sbv_to_int` (signed); widths 1/8/16/32/64/128.
