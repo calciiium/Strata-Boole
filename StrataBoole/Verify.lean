@@ -71,6 +71,13 @@ private def defaultLabel (m : SourceRange) (pfx : String) (l? : Option (BooleDDM
     modify fun s => { s with labelCounter := i + 1 }
     return s!"{pfx}_{i}_{m.start}"
 
+/-- `defaultLabel` for the `[name] ` label in front of a parameter list. -/
+private def defaultDeclLabel (m : SourceRange) (pfx : String)
+    (l? : Option (BooleDDM.DeclLabel SourceRange)) : TranslateM String := do
+  match l? with
+  | some (.declLabel _ ⟨_, l⟩) => return l
+  | none => defaultLabel m pfx none
+
 private def withTypeBVars (xs : List String) (k : TranslateM α) : TranslateM α := do
   let old := (← get).tyBVars
   modify fun s => { s with tyBVars := old ++ xs.toArray }
@@ -772,39 +779,27 @@ private def toCoreStmt (s : BooleDDM.Statement SourceRange) : TranslateM Core.St
       | none => []
       | some bs => (bindingsToList bs).map bindingName
     return Core.Statement.typeDecl { name := n, params := params } (← toCoreMetaData m)
-  | .funcDecl_statement m _ ⟨_, n⟩ ⟨_, targs?⟩ bs ret ⟨_, pres⟩ body ⟨_, inline?⟩ =>
-    let tys := match targs? with | none => [] | some ts => typeArgsToList ts
-    withTypeBVars tys do
-      let bsList := bindingsToList bs
-      let inputsMono ← bsList.mapM toCoreBinding
-      let outputMono ← toCoreMonoType ret
-      let inputs : ListMap Core.Expression.Ident Core.Expression.Ty :=
-        inputsMono.map (fun (id, mty) => (id, .forAll [] mty))
-      let inputNames := bsList.map bindingName
-      let pair ← (withBVars inputNames do
-        let mut precondsRev : List (DL.Util.FuncPrecondition Core.Expression.Expr Unit) := []
-        for p in pres.toList do
-          match p with
-          | .requires_spec _ _ _ cond =>
-            precondsRev := { expr := ← toCoreExpr cond, md := () } :: precondsRev
-          | _ => pure ()
-        let bodyExpr ← toCoreExpr body
-        return (precondsRev.reverse, bodyExpr) : TranslateM (List (DL.Util.FuncPrecondition Core.Expression.Expr Unit) × Core.Expression.Expr))
-      let (preconds, bodyExpr) := pair
-      let funcTy := Lambda.LMonoTy.mkArrow' outputMono (inputsMono.map (·.2))
-      let decl : Imperative.PureFunc Core.Expression := {
-        name := mkIdent n
-        typeArgs := tys
-        inputs := inputs
-        output := .forAll [] outputMono
-        body := some bodyExpr
-        attr := if inline?.isSome then #[.inline] else #[]
-        axioms := []
-        preconditions := preconds
-      }
-      -- Keep function name in local scope for subsequent statements.
-      modify fun st => { st with bvars := st.bvars.push (.op () (mkIdent n) (some funcTy)) }
-      return .funcDecl decl (← toCoreMetaData m)
+  | .funcDecl_statement m _ ⟨_, n⟩ ⟨_, targs?⟩ bs ret ⟨_, pres⟩ body _ =>
+    -- A local function is a local variable initialized with a Lambda
+    -- abstraction, as in Core: its parameters are de Bruijn-bound in
+    -- declaration order, and outer locals are captured as free variables.
+    if !(match targs? with | none => [] | some ts => typeArgsToList ts).isEmpty then
+      throwAt m s!"local function '{n}': polymorphism in local functions is not supported"
+    if pres.toList.any (fun | .requires_spec .. => true | _ => false) then
+      throwAt m s!"local function '{n}': preconditions are not supported"
+    let bsList := bindingsToList bs
+    let inputsMono ← bsList.mapM toCoreBinding
+    let outputMono ← toCoreMonoType ret
+    let k := bsList.length
+    let paramBVars : Array Core.Expression.Expr :=
+      bsList.toArray.mapIdx fun i _ => .bvar () (k - 1 - i)
+    let bodyExpr ← withBVarExprs paramBVars (toCoreExpr body)
+    let lambda := inputsMono.foldr
+      (fun (id, ty) acc => .abs () id.name (some ty) acc) bodyExpr
+    let funcTy := Lambda.LMonoTy.mkArrow' outputMono (inputsMono.map (·.2))
+    -- Keep function name in local scope for subsequent statements.
+    modify fun st => { st with bvars := st.bvars.push (.fvar () (mkIdent n) (some funcTy)) }
+    return .init (mkIdent n) (.forAll [] funcTy) (.det lambda) (← toCoreMetaData m)
   | .for_statement m v init guard step invs body =>
     let (id, ty) ← toCoreMonoBind v
     withBVars [id.name] do
@@ -1122,6 +1117,22 @@ private def toCoreDecls (cmd : BooleDDM.Command SourceRange) : TranslateM (List 
     return []
   | .command_axiom m _ ⟨_, l?⟩ e =>
     return [.ax { name := ← defaultLabel m "axiom" l?, e := ← toCoreExpr e } .empty]
+  -- `axiom`/`lemma [name] (x : T, ...) { triggers }: e` stand for a `forall` over
+  -- the parameters; triggers are dropped, as for `forall` expressions.
+  | .command_axiom_params m _ ⟨_, l?⟩ ds _ e =>
+    return [.ax { name := ← defaultDeclLabel m "axiom" l?, e := ← toCoreQuant true ds e } .empty]
+  | .command_lemma m _ ⟨_, l?⟩ e =>
+    return [.lemma { name := ← defaultLabel m "lemma" l?, e := ← toCoreExpr e } .empty]
+  | .command_lemma_targs m _ ⟨_, l?⟩ targs e =>
+    let tys := typeArgsToList targs
+    withTypeBVars tys do
+      return [.lemma { name := ← defaultDeclLabel m "lemma" l?, typeArgs := tys,
+                       e := ← toCoreExpr e } .empty]
+  | .command_lemma_params m _ ⟨_, l?⟩ ⟨_, targs?⟩ ds _ e =>
+    let tys := match targs? with | none => [] | some ts => typeArgsToList ts
+    withTypeBVars tys do
+      return [.lemma { name := ← defaultDeclLabel m "lemma" l?, typeArgs := tys,
+                       e := ← toCoreQuant true ds e } .empty]
   | .command_distinct m _ ⟨_, l?⟩ ⟨_, es⟩ =>
     return [.distinct (mkIdent (← defaultLabel m "distinct" l?)) (← es.toList.mapM toCoreExpr) .empty]
   | .command_block _ b =>
@@ -1231,6 +1242,7 @@ private partial def stmtListHasNatOrPos : List Core.Statement → Bool
   | [] => false
   | s :: rest =>
     let here := match s with
+      | .cmd (.cmd (.init _ ty (.det e) _)) => lTyHasNatOrPos ty || lExprUsesNatOrPos e
       | .cmd (.cmd (.init _ ty _ _))    => lTyHasNatOrPos ty
       | .cmd (.cmd (.assert _ b _))     => lExprUsesNatOrPos b
       | .cmd (.cmd (.assume _ b _))     => lExprUsesNatOrPos b
@@ -1248,10 +1260,6 @@ private partial def stmtListHasNatOrPos : List Core.Statement → Bool
           || stmtListHasNatOrPos body
       | .loop .nondet _ invs body _     =>
           invs.any (fun (_, e) => lExprUsesNatOrPos e) || stmtListHasNatOrPos body
-      | .funcDecl f _                   =>
-          f.body.any lExprUsesNatOrPos
-          || f.axioms.any lExprUsesNatOrPos
-          || f.measure.any lExprUsesNatOrPos
       | _                               => false
     here || stmtListHasNatOrPos rest
 
