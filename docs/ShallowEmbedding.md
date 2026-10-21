@@ -49,8 +49,11 @@ flowchart TD
 `StrataBoole/Shallow/Layer.lean` provides a nondeterminism monad with `havoc`, `assume`,
 `assert` and a `while` loop carrying its invariant, each with a proved rule.
 `StrataBooleTest/shallow_find_max.lean` verifies three hand-written programs with it,
-find max among them, and fixes the form the translation should produce. The proofs use
-only Lean's standard axioms.
+find max among them, and fixes the form the translation should produce.
+`StrataBooleTest/shallow_generic_datatypes.lean` is a prototype of the generic datatype
+model: one inductive of constructor applications for all datatypes, with the datatype laws
+proved once and `pos.toInt` by structural recursion. The proofs use only Lean's standard
+axioms.
 
 ## Research questions
 
