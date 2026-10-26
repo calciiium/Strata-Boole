@@ -55,6 +55,16 @@ model: one inductive of constructor applications for all datatypes, with the dat
 proved once and `pos.toInt` by structural recursion. The proofs use only Lean's standard
 axioms.
 
+`StrataBoole/Shallow/Interpreter/` is a prototype of the interpreter, the object the adequacy
+proof is about. `Interp.lean` gives Core statements their meaning as `ND` computations: the
+store is `FreeVarVal`, an expression is evaluated by `LExpr.denote` after `LExpr.typeCheck`,
+a loop carries only the variables its body assigns and reads the others from the store at
+loop entry, a block restores the names it declares. `Model.lean` is a partial concrete model
+of Core's built-ins (`int`, `bool`, `Map`, `Sequence`) for the two interpretation parameters
+of `denote`; `Sort.lean` has the recursion principle and decidable equality for `LSort`.
+`Reflect.lean` and `Command.lean` (`shallow_reflect`) bind each procedure's type-checked Core
+AST to `<name>_ast : Core.Procedure`, a literal the kernel can compute with.
+
 ## Research questions
 
 1. **Variables:** represent program variables so that verification conditions range over
