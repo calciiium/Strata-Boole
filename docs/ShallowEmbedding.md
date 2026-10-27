@@ -62,8 +62,9 @@ a loop carries only the variables its body assigns and reads the others from the
 loop entry, a block restores the names it declares. `Model.lean` is a partial concrete model
 of Core's built-ins (`int`, `bool`, `Map`, `Sequence`) for the two interpretation parameters
 of `denote`; `Sort.lean` has the recursion principle and decidable equality for `LSort`.
-`Reflect.lean` and `Command.lean` (`shallow_reflect`) bind each procedure's type-checked Core
-AST to `<name>_ast : Core.Procedure`, a literal the kernel can compute with.
+`Reflect.lean` and `Command.lean` (`shallow_reflect`) bind the type-checked Core program to
+`<p>_ast : Core.Program` and each procedure to `<name>_ast : Core.Procedure`, literals the
+kernel can compute with.
 
 ## Research questions
 

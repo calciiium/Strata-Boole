@@ -12,8 +12,9 @@ time. That result is a value in the elaborator's memory, not a term the kernel c
 with: the lowering is built from `partial` definitions, so `typeCheck p` never reduces. To
 state and prove anything about the program, each procedure is turned back into a closed term
 made of constructors and literals (`ToExpr`) and bound to a definition
-`<name>_ast : Core.Procedure`, on which `rfl`, `simp` and `decide` work by structural
-reduction.
+`<name>_ast : Core.Procedure`; the whole program is bound as well, since its functions, axioms
+and type declarations give the procedure's names their meaning. On these definitions `rfl`,
+`simp` and `decide` work by structural reduction.
 
 Leaf types derive `ToExpr`. The types parametrised by `PureExpr` or `LExprParamsT` cannot be
 derived (the parameter is a bundle of `Type`s, not a `Type`), so their instances are written
@@ -183,6 +184,58 @@ def procedureE (p : Core.Procedure) : MetaM Expr := do
 def addProcedureAst (name : Name) (p : Core.Procedure) : MetaM Unit := do
   let value ← procedureE p
   let _ ← mkAuxDefinition name (mkConst ``Core.Procedure) value
+  enableRealizationsForConst name
+
+/-! ## Declarations and programs
+
+Functions, axioms, lemmas and type declarations carry the meaning of the names a procedure
+uses, so the whole program is reflected as well. -/
+
+/-- The expression type as Core's declarations spell it. -/
+instance : ToExpr (Lambda.LExpr Core.CoreLParams.mono) := inferInstanceAs (ToExpr Core.Expression.Expr)
+
+deriving instance ToExpr for Strata.DL.Util.FuncAttr
+deriving instance ToExpr for Strata.DL.Util.FuncPrecondition
+deriving instance ToExpr for Strata.DL.Util.Func
+deriving instance ToExpr for Lambda.LConstr
+deriving instance ToExpr for Core.TypeSynonym
+deriving instance ToExpr for Core.Axiom
+deriving instance ToExpr for Core.Lemma
+
+/-- `LDatatype` carries the proof that it has a constructor; on a literal, `rfl` is that proof. -/
+instance : ToExpr (Lambda.LDatatype Unit) where
+  toExpr d :=
+    mkApp5 (mkConst ``Lambda.LDatatype.mk) (mkConst ``Unit) (toExpr d.name) (toExpr d.typeArgs)
+      (toExpr d.constrs) (mkApp2 (mkConst ``Eq.refl [.succ .zero]) (mkConst ``Bool) (mkConst ``Bool.true))
+  toTypeExpr := mkApp (mkConst ``Lambda.LDatatype) (mkConst ``Unit)
+
+instance : ToExpr Core.TypeDecl where
+  toExpr
+    | .con tc => mkApp (mkConst ``Core.TypeDecl.con) (toExpr tc)
+    | .syn ts => mkApp (mkConst ``Core.TypeDecl.syn) (toExpr ts)
+    | .data ds => mkApp (mkConst ``Core.TypeDecl.data) (toExpr ds)
+  toTypeExpr := mkConst ``Core.TypeDecl
+
+/-- A declaration; procedures go through `procedureE`. -/
+def declE : Core.Decl → MetaM Expr
+  | .type t md => pure (mkApp2 (mkConst ``Core.Decl.type) (toExpr t) (mdE md))
+  | .ax a md => pure (mkApp2 (mkConst ``Core.Decl.ax) (toExpr a) (mdE md))
+  | .lemma l md => pure (mkApp2 (mkConst ``Core.Decl.lemma) (toExpr l) (mdE md))
+  | .distinct x es md =>
+    pure (mkApp3 (mkConst ``Core.Decl.distinct) (identE x) (toExpr es) (mdE md))
+  | .proc p md => return mkApp2 (mkConst ``Core.Decl.proc) (← procedureE p) (mdE md)
+  | .func f md => pure (mkApp2 (mkConst ``Core.Decl.func) (toExpr f) (mdE md))
+  | .recFuncBlock fs md => pure (mkApp2 (mkConst ``Core.Decl.recFuncBlock) (toExpr fs) (mdE md))
+
+/-- The program `p` as a closed term of type `Core.Program`. -/
+def programE (p : Core.Program) : MetaM Expr := do
+  let ds ← p.decls.mapM declE
+  return mkApp (mkConst ``Core.Program.mk) (← mkListLit (mkConst ``Core.Decl) ds)
+
+/-- Add `name : Core.Program := p` to the environment. -/
+def addProgramAst (name : Name) (p : Core.Program) : MetaM Unit := do
+  let value ← programE p
+  let _ ← mkAuxDefinition name (mkConst ``Core.Program) value
   enableRealizationsForConst name
 
 end Strata.Shallow.Reflect
