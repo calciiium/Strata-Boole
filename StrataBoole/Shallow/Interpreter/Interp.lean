@@ -25,8 +25,10 @@ conditions.
   are evaluated by `denote` directly; there is no second evaluator.
 * **Expressions.** `evalExpr σ e τ` runs Strata's computable type checker `LExpr.typeCheck`
   and, on success, `LExpr.denote` with the derivation obtained from `typeCheck_to_HasTypeA`.
-  An ill-typed expression makes the statement stuck (no outcome), mirroring a missing rule in
-  Core's semantics.
+* **Failure, never vacuity.** An ill-typed expression (a loop guard is checked before the loop,
+  since inside `whileInv` it is a proposition), and every construct the interpreter does not
+  handle, is `ND.fail`: the outcome `none` of a failed `assert`. A computation with no outcome
+  at all would satisfy every specification; this one satisfies none.
 * **Loops are frame-aware.** The loop state carries only the variables the body assigns
   (`Block.modifiedVars` minus `Block.initVars`); all other variables are read from the store
   at loop entry (`Store.merge`). Without this the loop invariant would have to restate that
@@ -35,8 +37,8 @@ conditions.
   `projectStore` does.
 * **Outputs** are arbitrary at procedure entry (`havoc`); an inout parameter keeps its input
   value.
-* **Unsupported for now** (`ND.fail`): procedure calls, `exit`, nondeterministic loops, local `type`
-  declarations.
+* **Unsupported for now** (`ND.fail`): procedure calls, `exit`, nondeterministic loops, local
+  `type` declarations.
 
 The model `(tcInterp, opInterp, vt)` is a parameter bundled in `Sem`; `Model.lean` provides
 the concrete one for Core's built-ins.
@@ -209,9 +211,10 @@ noncomputable def default : Store M := fun _ s => (Inhabited.default : SortDenot
 
 end Store
 
-/-- A computation with no outcome at all: the statement is stuck. Distinct from `assert`
-failure, whose outcome is `none`. -/
-def ND.fail {α : Type} : ND α := ⟨fun _ => False⟩
+/-- The failing computation: its only outcome is `none`, as after a failed `assert`. Used for
+ill-typed expressions and for every statement the interpreter does not handle, so that no
+specification holds of them vacuously. -/
+def ND.fail {α : Type} : ND α := ⟨fun r => r = none⟩
 
 /-! ## Expressions -/
 
@@ -304,14 +307,16 @@ noncomputable def interpStmt (M : Sem) (Γ : Ctx) : Core.Statement → Store M �
   | .ite .nondet t e _, σ => do
     let b ← ND.havoc (α := Bool)
     if b then interpBlock M Γ t σ else interpBlock M Γ e σ
-  | .loop (.det g) _ invs body _, σ => do
-    let vs := loopVars body
-    let t ← ND.whileInv
-      (fun t => invsHold M (σ.merge vs t) invs)
-      (fun t => evalBool M (σ.merge vs t) g = some true)
-      (fun t => interpBlock M Γ body (σ.merge vs t))
-      σ
-    pure (σ.merge vs t)
+  | .loop (.det g) _ invs body _, σ =>
+    if LExpr.typeCheck (T := Core.CoreLParams) [] g = some LMonoTy.bool then do
+      let vs := loopVars body
+      let t ← ND.whileInv
+        (fun t => invsHold M (σ.merge vs t) invs)
+        (fun t => evalBool M (σ.merge vs t) g = some true)
+        (fun t => interpBlock M Γ body (σ.merge vs t))
+        σ
+      pure (σ.merge vs t)
+    else ND.fail
   | .loop .nondet .., _ => ND.fail
   | .exit .., _ => ND.fail
   | .typeDecl .., _ => ND.fail
