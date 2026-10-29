@@ -1,10 +1,13 @@
-# Shallow embedding of Strata in Lean
+# Verifying Boole programs in Lean
 
-The goal is to interpret Strata Core programs in Lean as computations in a
-nondeterministic state monad. Verification conditions come from proved
-weakest-precondition rules, so the generator is sound by construction. The design follows
-Velvet; the code builds on Lean's `Std.Do` and `mvcgen`. Boole programs reach it through
-their lowering to Core.
+## Goal
+
+Verify Boole programs in Lean with proofs that are sound by construction. Today's Lean
+path trusts the VC generator, the SMT encoding and a bridge axiom; strata-org/Strata#1488
+showed it could prove `False`, and strata-org/Strata#1490 closed that by refusing every
+VC the denotation does not cover. Here the trusted parts are Core's semantics and Lean, and the
+goals range over Lean values, so Lean tactics work on them without a solver. Boole programs
+reach it through their lowering to Core.
 
 ```mermaid
 flowchart TD
@@ -13,91 +16,130 @@ flowchart TD
         V["VC generation and SMT encoding"] --> S["cvc5, or Lean via lean-smt"]
     end
     subgraph lean ["Lean path"]
-        T["Core to Lean (planned)"] --> G["Std.Do + mvcgen + Layer.lean"]
-        G --> P["Lean proof"]
+        H["Core.Logic.Hoare: contract as a triple"] --> T["tactic applies the proved rules"]
+        T --> G["lifted goals over Lean values"] --> P["Lean proof"]
     end
     C --> V
-    C --> T
+    C --> H
+    O["Core operational semantics"] -. rules are theorems about it .- H
 ```
+
+## What Strata already provides
+
+`Strata/Languages/Core/Logic/` (on Strata `main` since September 2026) is a Hoare logic for
+Core over Core's own operational semantics:
+
+- `Core.Logic.Hoare.Triple π params Pre ss Post`, quantified over every model of the
+  program's uninterpreted symbols (`Lambda.Interp Core.Factory`).
+- Proved rules for `cmd`, `set`, `init`, `seq`, `block`, `exit_cons`, `ite`, `while_rule`
+  (partial correctness) and `Procedure.call_of_contract`.
+- `Procedure.contractTriple`, which reads `requires` and `ensures` as the triple to prove,
+  with `old` snapshots and typed parameters, and the generic `SpecHoareConnection`
+  (`Strata/DL/Imperative/Logic/`), which relates a triple to Strata's own notion of
+  assertion validity.
+- Conditions are interpreted with `LExpr.denote`; statements evaluate expressions with
+  `Expression.eval` over `Core.Factory`.
+
+Its tests prove some twenty procedures by applying the rules by hand, with `native_decide`
+for facts about the AST. There is no automation and no lifting: a goal reads
+`Expression.eval ρ.factory ρ.store e = some v`, not `x ≥ y`.
+
+Its authors confirmed (October 2026) that the triple was written as the specification of
+partial correctness, the invariant a correct program transformation must preserve, and
+that they have no plans to automate it. Generating verification conditions against it is
+open to others, and they see no blocker once the generator's correctness is established.
+So the tactic below is ours to build, and the triple is a stable target.
+
+## Plan
+
+1. **VC generation tactic over `Core.Logic.Hoare`.** From `Procedure.contractTriple p params
+   name`, apply the rules backwards statement by statement and discharge their side
+   conditions (`InitEnvWF`, `PostWF`, `exitsCoveredByBlocks`) by evaluation on the
+   concrete AST. The result is one goal per `assert`, loop invariant and `ensures`, over
+   the store. This is the shape of `core_vcgen` in the `StrataBoole/Deep/` experiment (fork
+   branch `exp/deep-embedding`), retargeted from its own `Exec` to Strata's `Triple`.
+2. **Lifting.** Turn each goal into a proposition over Lean values: a store slot of type
+   `int` is an `Int` (`inputAsPredicate` gives the literal), `Expression.eval` of an
+   operator on literals is the Lean operation (one lemma per operator, none in Strata yet),
+   and a contract clause under `denote` becomes the corresponding proposition. This is
+   the shape of `core_lift`. The interpreter prototype's `Model.lean` and `Sort.lean`, a
+   concrete interpretation of Core's types and operators over `LExpr.denote`, carry over
+   as this layer. Milestone: `max2`, then `find_max`, proved by the tactic, lifting, and
+   `omega`/`grind`.
+3. **Boole entry.** The prototype's `shallow_reflect` (on its fork branch) already produces
+   the type-checked Core program as a Lean term. It is the input of step 1, so a user
+   writes a `#strata program Boole` block and states `contractTriple` on its procedures.
+4. **Gaps shared with Strata, fixed in Strata.** Rules for nondeterministic `if` and
+   `while`; user-defined functions in the model; the generic datatype carrier wired into
+   the model (decision below), which also covers `nat`.
+5. **Boole semantics.** A Boole interpreter proved to agree with `toCoreProgram`, so that
+   Boole has a meaning stated in its own terms and the lowering to Core is proved correct
+   rather than definitional. This is what makes Boole a language rather than a front end.
+   It comes after steps 1 to 3 because the agreement theorem needs Core's semantics on the
+   other side. Its prerequisites, `toCoreExpr` total and the `nat` library inside
+   `typeCheck`, are merged (strata-org/Strata-Boole#25, #26). Running programs is not
+   what it is for: Strata already has an executable evaluator for Core
+   (`Strata/Languages/Core/StatementEval.lean`). Open design choice: Velvet's
+   nondeterministic state monad, with its VC generator, is a candidate for the
+   interpreter now that Strata and Velvet share a Lean version.
 
 ## Decisions
 
-- **Input is Core**, which has a formal semantics (`StatementSemantics.lean`), so the
-  interpretation can be proved adequate against it. Boole and other front ends lower to
-  Core.
-- **Framework: `Std.Do` and `mvcgen`**, available in Lean 4.29 and 4.31. Lean marks
-  `mvcgen` experimental; its successor `vcgen` needs Lean 4.33.
-- **No Velvet dependency:** Velvet needs Lean 4.34.
+- Build on `Core.Logic.Hoare`, not on a semantics of our own: neither `Deep/`'s `Exec`,
+  which nothing connects to Core's semantics, nor an interpreter with an adequacy proof
+  that would redo what Strata's rules already prove.
+- Core first, then Boole. Boole is the language users write and the one this work is
+  about; Core is where the proved semantics lives today. Starting from Boole directly
+  would leave nothing to prove adequacy against, so the Boole semantics is step 5, not
+  step 1.
+- Goals over Lean values come from lifting, not from a monadic encoding, so
+  `Std.Do`/`mvcgen` (`StrataBoole/Shallow/Layer.lean`) is off the path.
+- Failure is never vacuous: a construct the tactic cannot handle leaves the goal open
+  instead of closing it.
+- Datatypes get one generic model, not one Lean inductive per program: a single inductive
+  of constructor applications with a well-sortedness predicate (`DT.Carrier` in
+  `Strata/DL/SMT/DenoteDatatypes.lean`, the SMT denotation under review in Strata). Its laws
+  are proved once, a program's datatypes are declarations the model reads, and `nat` is
+  its `pos`/`nat` with `toInt` by structural recursion. The same carrier interprets
+  datatype sorts in the model `Triple` quantifies over, which discharges the laws the
+  Lambda denotation leaves as assumptions. The per-program inductives of
+  strata-org/Strata#1480 serve the SMT-IR path; readable goals (`pos.xO h` for
+  `mk "xO" [h]`) are notation and simp lemmas added later.
+- This is a deep embedding with shallow goals: the program stays data, the Lean term is
+  the proof about it, and what the user sees are goals over Lean values. It started as a
+  shallow embedding in the Velvet sense; say so when the difference matters.
 
-## Mapping
+## Coverage of the rules
 
-| Core | Lean |
+| Core | `Core.Logic.Hoare` |
 | --- | --- |
-| assignments, `if`, locals | `do` notation |
-| `exit` from a loop or the procedure | `break`, `return` |
-| other labeled `exit` | to do, e.g. one exception per label |
-| `while` without a measure, `havoc`, `assume`, `assert` | `Layer.lean` |
-| `while` with a measure, nondeterministic `init`, `if *`, `while *` | to do |
-| `call` | the callee's proved specification |
-| `in`, `inout`, `out` parameters (Boole's globals and `modifies` become these) | arguments and results |
-| `int`, `bool`, `nat`, `bv n`, `Sequence`, `Map` | `Int`, `Bool`, `Nat`, `BitVec n`, `List`/`Array`, functions |
-| datatypes | inductive types |
-| `cover`, local function and type declarations | to do |
+| assignments, `init`, `assert`, `assume`, `havoc` (as `set x *` through `cmd`), blocks, `exit`, deterministic `if` and `while`, `call` | rules exist |
+| `if *`, `while *`, loop measures, `cover` | to add |
+| `int`, `bool`, `bv n`, `Map`, `Sequence` | denoted; lifting lemmas to add (step 2) |
+| datatypes, `nat` | generic carrier (decision above); wiring into the model is step 4 |
+| user functions | step 4, Strata's TODO on the model factory |
 
 ## Status
 
-`StrataBoole/Shallow/Layer.lean` provides a nondeterminism monad with `havoc`, `assume`,
-`assert` and a `while` loop carrying its invariant, each with a proved rule.
-`StrataBooleTest/shallow_find_max.lean` verifies three hand-written programs with it,
-find max among them, and fixes the form the translation should produce.
-`StrataBooleTest/shallow_generic_datatypes.lean` is a prototype of the generic datatype
-model: one inductive of constructor applications for all datatypes, with the datatype laws
-proved once and `pos.toInt` by structural recursion. The proofs use only Lean's standard
-axioms.
-
-`StrataBoole/Shallow/Interpreter/` is a prototype of the interpreter, the object the adequacy
-proof is about. `Interp.lean` gives Core statements their meaning as `ND` computations: the
-store is `FreeVarVal`, an expression is evaluated by `LExpr.denote` after `LExpr.typeCheck`,
-a loop carries only the variables its body assigns and reads the others from the store at
-loop entry, a block restores the names it declares. `Model.lean` is a partial concrete model
-of Core's built-ins (`int`, `bool`, `Map`, `Sequence`) for the two interpretation parameters
-of `denote`; `Sort.lean` has the recursion principle and decidable equality for `LSort`.
-`Reflect.lean` and `Command.lean` (`shallow_reflect`) bind the type-checked Core program to
-`<p>_ast : Core.Program` and each procedure to `<name>_ast : Core.Procedure`, literals the
-kernel can compute with.
-
-## Research questions
-
-1. **Variables:** represent program variables so that verification conditions range over
-   Lean values. In the hand-written programs they already are; the open part is getting
-   there from Core, in particular with an interpreter.
-2. **Invariants:** pass the invariants recorded in the program to the monadic loop rules.
-   `whileInv` takes the invariant as an argument and its rule uses it; loops with a
-   measure are still missing.
-3. **Adequacy:** prove the interpretation adequate with respect to Core's operational
-   semantics. One detail: in Core a failed `assert` sets a failure flag and execution
-   continues, while in `Layer.lean` it ends the run.
-4. **`cover` and frames** have no counterpart in Velvet. Frames follow from Core's
-   `in`/`inout` parameters. `cover` checks that some path reaches it with its condition
-   true, which is not a weakest-precondition fact.
+- Steps 1 and 2: not started against Strata's triple. `Deep/` has both against its own
+  semantics, with `max2` and a counting loop proved.
+- `StrataBoole/Shallow/Layer.lean` is kept until the milestone is reached.
+- `StrataBooleTest/shallow_generic_datatypes.lean`: first prototype of the carrier.
+- Risks. Strata's own hand proof of a two-branch `if` is some twenty-five lines with
+  `native_decide` and explicit store facts, so discharging the side conditions
+  automatically is the bulk of step 1. Step 4 also waits on Strata carrying the
+  typed-contract invariant as a hypothesis of `contractTriple`.
 
 ## Open questions
 
-- **Translator or interpreter:** generate Lean code for each program, or define the
-  interpretation as one Lean function, which makes adequacy a single theorem.
-- **Execution:** `ND` is a set of outcomes, so it cannot run programs; Velvet's monad can.
-- **`assume`:** in Boogie an impossible `assume` makes the path vacuous; Velvet's choice
-  operator instead requires proving that a value exists. `Layer.lean` follows Boogie.
-- **Reads:** a checked read needs an `assert` or Lean's `a[i]'h`. Core leaves an
-  out-of-range `select!` unconstrained, while Lean's `a[i]!` returns a default value,
-  which proofs must not rely on.
-- **Goal names:** `mvcgen` numbers the goals; they should carry the program's clause names.
-- **Axioms:** a program's axioms become either Lean axioms, which are trusted, or
-  hypotheses of each theorem.
+- Loop measures: `while_rule` is partial correctness. Add a total-correctness rule, or
+  check `decreases` separately?
+- `cover` is a reachability check, not a Hoare fact. How to state it?
+- Goal names: carry the program's clause names into the goals the tactic leaves.
+- `native_decide` for AST facts: acceptable in the tactic, or avoid it?
 
 ## Sources
 
 - [Velvet (CAV'26)](https://ilyasergey.net/assets/pdf/papers/velvet-cav26.pdf)
 - [Foundational Multi-Modal Program Verifiers (Loom, POPL'26)](https://ilyasergey.net/assets/pdf/papers/loom-popl26.pdf)
-- [verse-lab/velvet](https://github.com/verse-lab/velvet)
 - [ilyasergey/lean-vcgen-tutorial](https://github.com/ilyasergey/lean-vcgen-tutorial)
