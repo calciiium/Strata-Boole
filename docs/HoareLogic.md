@@ -64,14 +64,16 @@ So the tactic below is ours to build, and the triple is a stable target.
    and a contract clause under `denote` becomes the corresponding proposition. This is
    the shape of `core_lift`. The interpreter prototype's `Model.lean` and `Sort.lean`, a
    concrete interpretation of Core's types and operators over `LExpr.denote`, carry over
-   as this layer. Milestone: `max2`, then `find_max`, proved by the tactic, lifting, and
-   `omega`/`grind`.
+   as this layer. Milestone: `max2`, then the counting loop of `demo.lean`, proved by the
+   tactic, lifting, and `omega`/`grind`; `find_max` once `Map` is in (see Risks).
 3. **Boole entry.** The prototype's `shallow_reflect` (on its fork branch) already produces
    the type-checked Core program as a Lean term. It is the input of step 1, so a user
    writes a `#strata program Boole` block and states `contractTriple` on its procedures.
 4. **Gaps shared with Strata, fixed in Strata.** Rules for nondeterministic `if` and
-   `while`; user-defined functions in the model; the generic datatype carrier wired into
-   the model (decision below), which also covers `nat`.
+   `while`; the program's own declarations in the model, that is its functions (with
+   bodies, recursive ones included), its uninterpreted functions and its axioms, which
+   `Triple` does not see today; the generic datatype carrier wired into the model
+   (decision below), which also covers `nat`; `Map` and `Sequence` (see Risks).
 5. **Boole semantics.** A Boole interpreter proved to agree with `toCoreProgram`, so that
    Boole has a meaning stated in its own terms and the lowering to Core is proved correct
    rather than definitional. This is what makes Boole a language rather than a front end.
@@ -117,20 +119,71 @@ So the tactic below is ours to build, and the triple is a stable target.
 | --- | --- |
 | assignments, `init`, `assert`, `assume`, `havoc` (as `set x *` through `cmd`), blocks, `exit`, deterministic `if` and `while`, `call` | rules exist |
 | `if *`, `while *`, loop measures, `cover` | to add |
-| `int`, `bool`, `bv n`, `Map`, `Sequence` | denoted; lifting lemmas to add (step 2) |
+| `int`, `bool`, `bv n` | denoted; lifting lemmas to add (step 2) |
+| `Map`, `Sequence`, `string` operators | not usable yet: no value forms in the evaluator, and the triple quantifies over models that need not satisfy their axioms (see Risks) |
 | datatypes, `nat` | generic carrier (decision above); wiring into the model is step 4 |
 | user functions | step 4, Strata's TODO on the model factory |
 
+## Target: the benchmark the solver path already verifies
+
+`StrataBooleTest/dalek_sum_of_slice.lean` (36 obligations, cvc5 and lean-smt) is the
+program this route has to reach. What it uses, and where each item sits:
+
+| In the program | Needs | Step |
+| --- | --- | --- |
+| `for` loop with six invariants, `call` in the body, `exit` | rules exist; the tactic must discharge the loop and call side conditions | 1 |
+| integer and `bv W8` arithmetic, `as_uint`, comparisons | lifting lemmas per operator | 2 |
+| quantified `requires` and invariants | lifting of `denote` on quantifiers to Lean `∀` over `Int` | 2 |
+| `Sequence (bv W8)` and `Sequence Scalar`, `select`, `length` | a model and value forms in Strata | 4 |
+| native `nat`, the `nat_*` library | the generic carrier in the model, library functions as program functions | 4 |
+| `function` definitions, one `rec function` with `requires` and `decreases`, `function f();` without body | program declarations in the model | 4 |
+| `axiom` declarations, including the unfolding axiom of the recursive function | program axioms as hypotheses on the model | 4 |
+| a callee whose body is `assume false` | `call_of_contract` with a trivially proved contract | 1 |
+
+The lifted goals must stay solver-friendly: lean-smt closes goals over `Int`, `Bool` and
+`BitVec`, so sequences should lift to a length and an index function rather than to
+`List`, and `nat` to `Nat`. Decide this with step 4; it does not affect steps 1 to 3.
+
+Order: `max2`, the counting loop, then this program as soon as step 4 lands in Strata.
+Everything in steps 1 to 3 is exercised by the first two and reused unchanged by the third.
+
 ## Status
 
-- Steps 1 and 2: not started against Strata's triple. `Deep/` has both against its own
+- `max2` is proved against Strata's triple, by hand, in `StrataBooleTest/hoare_max2.lean`:
+  `contractTriple_of_core_typed`, then `block`, `block`, `ite` and `set`, every side
+  condition by `native_decide` on the reflected program. The lifting lemmas it uses are
+  in `StrataBoole/HoareLift.lean`: the evaluator on `Int.Ge` over a store of literals
+  (one unfolding of `LExpr.eval.eq_2` plus the factory entry's facts), and the denotation
+  of `Int.Ge`, `Bool.And`, `Bool.Or` and `==` on literals in every model, each from the
+  model's agreement with the operator's concrete evaluation. The proof is the
+  specification of the step 1 tactic: it does these steps for any straight-line body with
+  `if`. Steps 1 and 2 as automation: not started. `Deep/` has both against its own
   semantics, with `max2` and a counting loop proved.
 - `StrataBoole/Shallow/Layer.lean` is kept until the milestone is reached.
+- Two things the hand proof settled. Under the module system, facts about factory entries
+  are not `rfl`; they need `import all` of the defining files and `simp` unfolding. And
+  the typing derivations (`HasTypeA`) must be spelled with the annotations exactly as the
+  lowering writes them, or the rewrite rules do not fire; the tactic should build them
+  from the term, not from the types.
 - `StrataBooleTest/generic_datatypes.lean`: first prototype of the carrier.
 - Risks. Strata's own hand proof of a two-branch `if` is some twenty-five lines with
   `native_decide` and explicit store facts, so discharging the side conditions
   automatically is the bulk of step 1. Step 4 also waits on Strata carrying the
   typed-contract invariant as a hypothesis of `contractTriple`.
+- `Map` and `Sequence` are outside the Hoare logic today, for two reasons that both
+  need a Strata change. First, `set` and `init` require `Expression.eval` to return a
+  value, and `evalFully` returns `none` for a full application of an operator without a
+  concrete evaluation (`select`, `update`, the sequence and string operators), so
+  `x := m[0]` has no execution and its triple holds for any postcondition. Second,
+  `Triple` quantifies over every `Lambda.Interp`, which must agree with function bodies
+  and concrete evaluations but not with the factory axioms, so nothing about
+  `m[k := v][k]` is provable in any case. The fix is to give these operators a fixed
+  interpretation in the model (maps as functions, sequences as lists) together with
+  value forms for the evaluator, or to interpret `set` and `init` through `denote`.
+  `Strata/Languages/Core/ProgramEval.lean` already has the evaluation of `select` over
+  `update`/`mapConst` terms for the concrete interpreter. Until this lands the tactic
+  refuses such statements, and the milestone is an integer program with a loop
+  (`demo.lean`'s), not `find_max`.
 
 ## Open questions
 
@@ -138,6 +191,9 @@ So the tactic below is ours to build, and the triple is a stable target.
   check `decreases` separately?
 - `cover` is a reachability check, not a Hoare fact. How to state it?
 - Goal names: carry the program's clause names into the goals the tactic leaves.
+- Evaluator vacuity (see Risks): evaluation rules for `Map` and `Sequence` operators, or
+  `set`/`init` through `denote`? The second keeps one interpretation for expressions
+  everywhere; the first keeps Strata's semantics unchanged.
 - `native_decide` for AST facts: acceptable in the tactic, or avoid it?
 
 ## Sources
