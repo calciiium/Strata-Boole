@@ -23,7 +23,7 @@ for the Core instantiation `Core.Expression`. -/
 open Lean Meta
 open Lambda Imperative
 
-namespace Strata.Shallow.Reflect
+namespace Strata.Reflect
 
 /-! ## Leaves -/
 
@@ -238,4 +238,4 @@ def addProgramAst (name : Name) (p : Core.Program) : MetaM Unit := do
   let _ ← mkAuxDefinition name (mkConst ``Core.Program) value
   enableRealizationsForConst name
 
-end Strata.Shallow.Reflect
+end Strata.Reflect

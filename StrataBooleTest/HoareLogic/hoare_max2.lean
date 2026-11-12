@@ -3,14 +3,14 @@
 
   SPDX-License-Identifier: Apache-2.0 OR MIT
 -/
-import StrataBoole.HoareLift
+import StrataBoole.HoareLogic.HoareLift
 import StrataBoole.MetaVerifier
 
 /-! # `max2` against Core's Hoare logic, by hand
 
 The first procedure proved on the Lean route of `docs/HoareLogic.md`. Everything the
 tactic of step 1 will automate is written out once here; the lifting lemmas it uses
-are in `StrataBoole.HoareLift`.
+are in `StrataBoole.HoareLogic.HoareLift`.
 -/
 
 open Strata Lambda Core HoareLift

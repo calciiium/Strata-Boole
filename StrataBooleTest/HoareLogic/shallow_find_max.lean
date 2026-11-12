@@ -3,7 +3,7 @@
 
   SPDX-License-Identifier: Apache-2.0 OR MIT
 -/
-import StrataBoole.Shallow.Layer
+import StrataBoole.HoareLogic.Shallow.Layer
 
 /-! Three programs, written by hand in the form the translation from Core
 should produce, verified with `mvcgen` on the layer.  This file is the

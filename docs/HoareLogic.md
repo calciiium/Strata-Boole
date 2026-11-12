@@ -95,7 +95,7 @@ So the tactic below is ours to build, and the triple is a stable target.
   would leave nothing to prove adequacy against, so the Boole semantics is step 5, not
   step 1.
 - Goals over Lean values come from lifting, not from a monadic encoding, so
-  `Std.Do`/`mvcgen` (`StrataBoole/Shallow/Layer.lean`) is off the path.
+  `Std.Do`/`mvcgen` (`StrataBoole/HoareLogic/Shallow/Layer.lean`) is off the path.
 - Failure is never vacuous: a construct the tactic cannot handle leaves the goal open
   instead of closing it.
 - Datatypes get one generic model, not one Lean inductive per program: a single inductive
@@ -110,7 +110,7 @@ So the tactic below is ours to build, and the triple is a stable target.
 - This is a deep embedding with shallow goals: the program stays data, the Lean term is
   the proof about it, and what the user sees are goals over Lean values. It started as a
   shallow embedding in the Velvet sense; say so when the difference matters. The
-  `Shallow` names left in the tree (`StrataBoole/Shallow/`, `shallow_find_max`) are that
+  `Shallow` names left in the tree (`StrataBoole/HoareLogic/Shallow/`, `shallow_find_max`) are that
   prototype's.
 
 ## Coverage of the rules
@@ -149,23 +149,37 @@ Everything in steps 1 to 3 is exercised by the first two and reused unchanged by
 
 ## Status
 
-- `max2` is proved against Strata's triple, by hand, in `StrataBooleTest/hoare_max2.lean`:
+- Everything this document describes is in `StrataBoole/HoareLogic/`, with its tests in
+  `StrataBooleTest/HoareLogic/`.
+- Steps 1 to 3 are automated for integer programs. `boole_prove pgm proc`
+  (`StrataBoole/HoareLogic/Pipeline.lean`) proves `Procedure.contractTriple` for a
+  procedure of a Boole program with `hoare_contract`, `hoare_vcs`, `hoare_lift` and `omega`
+  or `grind`. The milestone is reached: `max2` and the counting loop of `demo.lean`
+  (`StrataBooleTest/HoareLogic/demo_pipeline.lean`).
+- `hoare_contract` and `hoare_vcs` apply weakest-precondition rules proved from Strata's,
+  `if *` and `while *` included (`StrataBoole/HoareLogic/Hoare/`), and leave one goal per
+  `assert`, invariant and `ensures`, named after its clause.
+- `hoare_lift` (`StrataBoole/HoareLogic/Hoare/Lift/`) lifts the `int` and `bool`
+  built-ins, `==`, `if … then … else` and `∀`/`∃` over `int` to Lean propositions.
+- Not covered yet: `call`, `exit`, loop measures, `bv`, `choose`, `bool` parameters.
+- `StrataBoole/HoareLogic/Deep/` proves the same programs against its own semantics, with
+  `core_vcgen` and `core_lift`, and also proves `choose`.
+- `max2` is proved against Strata's triple, by hand, in `StrataBooleTest/HoareLogic/hoare_max2.lean`:
   `contractTriple_of_core_typed`, then `block`, `block`, `ite` and `set`, every side
   condition by `native_decide` on the reflected program. The lifting lemmas it uses are
-  in `StrataBoole/HoareLift.lean`: the evaluator on `Int.Ge` over a store of literals
+  in `StrataBoole/HoareLogic/HoareLift.lean`: the evaluator on `Int.Ge` over a store of literals
   (one unfolding of `LExpr.eval.eq_2` plus the factory entry's facts), and the denotation
   of `Int.Ge`, `Bool.And`, `Bool.Or` and `==` on literals in every model, each from the
   model's agreement with the operator's concrete evaluation. The proof is the
   specification of the step 1 tactic: it does these steps for any straight-line body with
-  `if`. Steps 1 and 2 as automation: not started. `Deep/` has both against its own
-  semantics, with `max2` and a counting loop proved.
-- `StrataBoole/Shallow/Layer.lean` is kept until the milestone is reached.
+  `if`.
+- `StrataBoole/HoareLogic/Shallow/Layer.lean` is kept until the milestone is reached.
 - Two things the hand proof settled. Under the module system, facts about factory entries
   are not `rfl`; they need `import all` of the defining files and `simp` unfolding. And
   the typing derivations (`HasTypeA`) must be spelled with the annotations exactly as the
   lowering writes them, or the rewrite rules do not fire; the tactic should build them
   from the term, not from the types.
-- `StrataBooleTest/generic_datatypes.lean`: first prototype of the carrier.
+- `StrataBooleTest/HoareLogic/generic_datatypes.lean`: first prototype of the carrier.
 - Risks. Strata's own hand proof of a two-branch `if` is some twenty-five lines with
   `native_decide` and explicit store facts, so discharging the side conditions
   automatically is the bulk of step 1. Step 4 also waits on Strata carrying the
